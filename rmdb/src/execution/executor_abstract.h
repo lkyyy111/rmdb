@@ -113,6 +113,20 @@ inline bool eval_conditions(const std::vector<ColMeta> &cols, const RmRecord &re
     return true;
 }
 
+inline std::string make_index_key_from_record(const std::vector<ColMeta> &cols, const char *record_data) {
+    int total_len = 0;
+    for (auto &col : cols) {
+        total_len += col.len;
+    }
+    std::string key(total_len, '\0');
+    int offset = 0;
+    for (auto &col : cols) {
+        memcpy(&key[offset], record_data + col.offset, col.len);
+        offset += col.len;
+    }
+    return key;
+}
+
 class AbstractExecutor {
    public:
     Rid _abstract_rid;

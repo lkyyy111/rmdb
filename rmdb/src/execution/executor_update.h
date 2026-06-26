@@ -9,6 +9,8 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <set>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -38,9 +40,15 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        struct UpdateItem {
+            Rid rid;
+            std::unique_ptr<RmRecord> old_record;
+            std::unique_ptr<RmRecord> new_record;
+        };
+        std::vector<UpdateItem> items;
         for (auto &rid : rids_) {
             auto record = fh_->get_record(rid, context_);
-            RmRecord new_record(*record);
+            auto new_record = std::make_unique<RmRecord>(*record);
             for (auto &set_clause : set_clauses_) {
                 auto col = tab_.get_col(set_clause.lhs.col_name);
                 if (!coerce_value_to_col_type(set_clause.rhs, col->type)) {
@@ -49,9 +57,49 @@ class UpdateExecutor : public AbstractExecutor {
                 if (set_clause.rhs.raw == nullptr) {
                     set_clause.rhs.init_raw(col->len);
                 }
-                memcpy(new_record.data + col->offset, set_clause.rhs.raw->data, col->len);
+                memcpy(new_record->data + col->offset, set_clause.rhs.raw->data, col->len);
             }
-            fh_->update_record(rid, new_record.data, context_);
+            items.push_back(UpdateItem{rid, std::move(record), std::move(new_record)});
+        }
+
+        for (auto &index : tab_.indexes) {
+            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            std::set<std::string> new_keys;
+            for (auto &item : items) {
+                std::string old_key = make_index_key_from_record(index.cols, item.old_record->data);
+                std::string new_key = make_index_key_from_record(index.cols, item.new_record->data);
+                if (!new_keys.insert(new_key).second) {
+                    throw InternalError("Duplicate index key");
+                }
+                if (old_key == new_key) {
+                    continue;
+                }
+                std::vector<Rid> exists;
+                if (ih->get_value(new_key.data(), &exists, context_->txn_)) {
+                    bool self = false;
+                    for (auto &exist_rid : exists) {
+                        if (exist_rid == item.rid) {
+                            self = true;
+                        }
+                    }
+                    if (!self) {
+                        throw InternalError("Duplicate index key");
+                    }
+                }
+            }
+        }
+
+        for (auto &item : items) {
+            for (auto &index : tab_.indexes) {
+                auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                std::string old_key = make_index_key_from_record(index.cols, item.old_record->data);
+                std::string new_key = make_index_key_from_record(index.cols, item.new_record->data);
+                if (old_key != new_key) {
+                    ih->delete_entry(old_key.data(), context_->txn_);
+                    ih->insert_entry(new_key.data(), item.rid, context_->txn_);
+                }
+            }
+            fh_->update_record(item.rid, item.new_record->data, context_);
         }
         return nullptr;
     }

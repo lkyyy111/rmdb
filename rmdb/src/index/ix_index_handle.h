@@ -11,6 +11,8 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "ix_defs.h"
 #include "transaction/transaction.h"
@@ -79,7 +81,7 @@ class IxNodeHandle {
         rids = reinterpret_cast<Rid *>(keys + file_hdr->keys_size_);
     }
 
-    int get_size() { return page_hdr->num_key; }
+    int get_size() const { return page_hdr->num_key; }
 
     void set_size(int size) { page_hdr->num_key = size; }
 
@@ -180,6 +182,7 @@ class IxIndexHandle {
     int fd_;                                    // 存储B+树的文件
     IxFileHdr* file_hdr_;                       // 存了root_page，但其初始化为2（第0页存FILE_HDR_PAGE，第1页存LEAF_HEADER_PAGE）
     std::mutex root_latch_;
+    std::vector<std::pair<std::string, Rid>> mem_entries_;
 
    public:
     IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd);
@@ -217,6 +220,10 @@ class IxIndexHandle {
 
     Iid leaf_begin() const;
 
+    void scan_range(const char *lower_key, bool has_lower, bool lower_inclusive,
+                    const char *upper_key, bool has_upper, bool upper_inclusive,
+                    std::vector<Rid> *result) const;
+
    private:
     // 辅助函数
     void update_root_page_no(page_id_t root) { file_hdr_->root_page_ = root; }
@@ -239,4 +246,10 @@ class IxIndexHandle {
 
     // for index test
     Rid get_rid(const Iid &iid) const;
+
+    int compare_key(const std::string &lhs, const char *rhs) const;
+
+    int lower_bound_pos(const char *key) const;
+
+    int upper_bound_pos(const char *key) const;
 };
