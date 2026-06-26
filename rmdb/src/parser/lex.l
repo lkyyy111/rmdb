@@ -13,6 +13,8 @@
 %{
 #include "ast.h"
 #include "yacc.tab.h"
+#include <cerrno>
+#include <cstdlib>
 #include <iostream>
 
 // automatically update location
@@ -75,6 +77,8 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "SET" { return SET; }
 "SELECT" { return SELECT; }
 "INT" { return INT; }
+"BIGINT" { ast::set_bigint_type_hint(); return INT; }
+"DATETIME" { ast::set_datetime_type_hint(); return INT; }
 "CHAR" { return CHAR; }
 "FLOAT" { return FLOAT; }
 "INDEX" { return INDEX; }
@@ -97,7 +101,13 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 }
     /* literals */
 {value_int} {
-    yylval->sv_int = atoi(yytext);
+    errno = 0;
+    char *end = nullptr;
+    long long val = std::strtoll(yytext, &end, 10);
+    if (errno == ERANGE || end == yytext || *end != '\0') {
+        return YYUNDEF;
+    }
+    yylval->sv_int = val;
     return VALUE_INT;
 }
 {value_float} {

@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 #pragma once
 
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <memory>
@@ -19,8 +20,38 @@ enum JoinType {
 namespace ast {
 
 enum SvType {
-    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING
+    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_BIGINT, SV_TYPE_DATETIME
 };
+
+inline bool &bigint_type_hint() {
+    static bool hint = false;
+    return hint;
+}
+
+inline void set_bigint_type_hint() {
+    bigint_type_hint() = true;
+}
+
+inline bool consume_bigint_type_hint() {
+    bool hint = bigint_type_hint();
+    bigint_type_hint() = false;
+    return hint;
+}
+
+inline bool &datetime_type_hint() {
+    static bool hint = false;
+    return hint;
+}
+
+inline void set_datetime_type_hint() {
+    datetime_type_hint() = true;
+}
+
+inline bool consume_datetime_type_hint() {
+    bool hint = datetime_type_hint();
+    datetime_type_hint() = false;
+    return hint;
+}
 
 enum SvCompOp {
     SV_OP_EQ, SV_OP_NE, SV_OP_LT, SV_OP_GT, SV_OP_LE, SV_OP_GE
@@ -59,7 +90,15 @@ struct TypeLen : public TreeNode {
     SvType type;
     int len;
 
-    TypeLen(SvType type_, int len_) : type(type_), len(len_) {}
+    TypeLen(SvType type_, int len_) : type(type_), len(len_) {
+        if (type_ == SV_TYPE_INT && len_ == sizeof(int) && consume_bigint_type_hint()) {
+            type = SV_TYPE_BIGINT;
+            len = sizeof(std::int64_t);
+        } else if (type_ == SV_TYPE_INT && len_ == sizeof(int) && consume_datetime_type_hint()) {
+            type = SV_TYPE_DATETIME;
+            len = sizeof(std::int64_t);
+        }
+    }
 };
 
 struct Field : public TreeNode {
@@ -116,9 +155,9 @@ struct Value : public Expr {
 };
 
 struct IntLit : public Value {
-    int val;
+    std::int64_t val;
 
-    IntLit(int val_) : val(val_) {}
+    IntLit(std::int64_t val_) : val(val_) {}
 };
 
 struct FloatLit : public Value {
@@ -227,7 +266,7 @@ struct SelectStmt : public TreeNode {
 
 // Semantic value
 struct SemValue {
-    int sv_int;
+    std::int64_t sv_int;
     float sv_float;
     std::string sv_str;
     OrderByDir sv_orderby_dir;

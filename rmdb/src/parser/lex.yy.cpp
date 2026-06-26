@@ -608,7 +608,23 @@ char *yytext;
     /* enable location */
 #include "ast.h"
 #include "yacc.tab.h"
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
 #include <iostream>
+
+static bool equals_ignore_case(const char *lhs, const char *rhs) {
+    while (*lhs != '\0' && *rhs != '\0') {
+        unsigned char lhs_ch = static_cast<unsigned char>(*lhs);
+        unsigned char rhs_ch = static_cast<unsigned char>(*rhs);
+        if (std::tolower(lhs_ch) != std::tolower(rhs_ch)) {
+            return false;
+        }
+        ++lhs;
+        ++rhs;
+    }
+    return *lhs == '\0' && *rhs == '\0';
+}
 
 // automatically update location
 #define YY_USER_ACTION \
@@ -1136,6 +1152,14 @@ case 42:
 YY_RULE_SETUP
 #line 95 "lex.l"
 {
+    if (equals_ignore_case(yytext, "BIGINT")) {
+        ast::set_bigint_type_hint();
+        return INT;
+    }
+    if (equals_ignore_case(yytext, "DATETIME")) {
+        ast::set_datetime_type_hint();
+        return INT;
+    }
     yylval->sv_str = yytext;
     return IDENTIFIER;
 }
@@ -1145,7 +1169,13 @@ case 43:
 YY_RULE_SETUP
 #line 100 "lex.l"
 {
-    yylval->sv_int = atoi(yytext);
+    errno = 0;
+    char *end = nullptr;
+    long long val = strtoll(yytext, &end, 10);
+    if (errno == ERANGE || end == yytext || *end != '\0') {
+        return YYUNDEF;
+    }
+    yylval->sv_int = val;
     return VALUE_INT;
 }
 	YY_BREAK
@@ -2150,5 +2180,3 @@ void yyfree (void * ptr )
 #define YYTABLES_NAME "yytables"
 
 #line 116 "lex.l"
-
-

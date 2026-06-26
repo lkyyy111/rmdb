@@ -14,12 +14,7 @@ See the Mulan PSL v2 for more details. */
 #include <setjmp.h>
 #include <signal.h>
 #include <unistd.h>
-#include <algorithm>
 #include <atomic>
-#include <cctype>
-#include <fstream>
-#include <sstream>
-#include <vector>
 
 #include "errors.h"
 #include "optimizer/optimizer.h"
@@ -61,47 +56,6 @@ void sigint_handler(int signo) {
 }
 
 // 判断当前正在执行的是显式事务还是单条SQL语句的事务，并更新事务ID
-static std::string trim_sql(std::string sql) {
-    while (!sql.empty() && std::isspace(static_cast<unsigned char>(sql.back()))) {
-        sql.pop_back();
-    }
-    if (!sql.empty() && sql.back() == ';') {
-        sql.pop_back();
-    }
-    while (!sql.empty() && std::isspace(static_cast<unsigned char>(sql.back()))) {
-        sql.pop_back();
-    }
-    size_t start = 0;
-    while (start < sql.size() && std::isspace(static_cast<unsigned char>(sql[start]))) {
-        start++;
-    }
-    return sql.substr(start);
-}
-
-static std::string lower_copy(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return s;
-}
-
-static bool try_handle_show_index(const char *sql, Context *context) {
-    std::string stmt = trim_sql(sql);
-    std::istringstream iss(stmt);
-    std::vector<std::string> tokens;
-    std::string token;
-    while (iss >> token) {
-        tokens.push_back(token);
-    }
-    if (tokens.size() != 4) {
-        return false;
-    }
-    if (lower_copy(tokens[0]) != "show" || lower_copy(tokens[1]) != "index" || lower_copy(tokens[2]) != "from") {
-        return false;
-    }
-    sm_manager->show_index(tokens[3], context);
-    return true;
-}
-
 void SetTransaction(txn_id_t *txn_id, Context *context) {
     context->txn_ = txn_manager->get_transaction(*txn_id);
     if(context->txn_ == nullptr || context->txn_->get_state() == TransactionState::COMMITTED ||
@@ -163,32 +117,6 @@ void *client_handler(void *sock_fd) {
         // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
         Context *context = new Context(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
         SetTransaction(&txn_id, context);
-
-        bool handled_directly = false;
-        try {
-            handled_directly = try_handle_show_index(data_recv, context);
-        } catch (RMDBError &e) {
-            std::cerr << e.what() << std::endl;
-            memcpy(data_send, e.what(), e.get_msg_len());
-            data_send[e.get_msg_len()] = '\n';
-            data_send[e.get_msg_len() + 1] = '\0';
-            offset = e.get_msg_len() + 1;
-
-            std::fstream outfile;
-            outfile.open("output.txt", std::ios::out | std::ios::app);
-            outfile << "failure\n";
-            outfile.close();
-            handled_directly = true;
-        }
-        if (handled_directly) {
-            if (write(fd, data_send, offset + 1) == -1) {
-                break;
-            }
-            if (context->txn_->get_txn_mode() == false) {
-                txn_manager->commit(context->txn_, context->log_mgr_);
-            }
-            continue;
-        }
 
         // 用于判断是否已经调用了yy_delete_buffer来删除buf
         bool finish_analyze = false;

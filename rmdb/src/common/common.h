@@ -11,7 +11,10 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <cassert>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,10 +31,86 @@ struct TabCol {
     }
 };
 
+inline bool is_datetime_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+inline int datetime_days_in_month(int year, int month) {
+    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && is_datetime_leap_year(year)) {
+        return 29;
+    }
+    return days[month - 1];
+}
+
+inline int parse_datetime_part(const std::string &str, int pos, int len) {
+    int value = 0;
+    for (int i = 0; i < len; ++i) {
+        char ch = str[pos + i];
+        if (ch < '0' || ch > '9') {
+            return -1;
+        }
+        value = value * 10 + (ch - '0');
+    }
+    return value;
+}
+
+inline bool parse_datetime_literal(const std::string &str, std::int64_t *datetime_val) {
+    if (str.size() != 19 || str[4] != '-' || str[7] != '-' ||
+        str[10] != ' ' || str[13] != ':' || str[16] != ':') {
+        return false;
+    }
+
+    int year = parse_datetime_part(str, 0, 4);
+    int month = parse_datetime_part(str, 5, 2);
+    int day = parse_datetime_part(str, 8, 2);
+    int hour = parse_datetime_part(str, 11, 2);
+    int minute = parse_datetime_part(str, 14, 2);
+    int second = parse_datetime_part(str, 17, 2);
+    if (year < 1000 || year > 9999 || month < 1 || month > 12 ||
+        day < 1 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+        second < 0 || second > 59) {
+        return false;
+    }
+    if (day > datetime_days_in_month(year, month)) {
+        return false;
+    }
+
+    if (datetime_val != nullptr) {
+        *datetime_val = static_cast<std::int64_t>(year) * 10000000000LL +
+                        static_cast<std::int64_t>(month) * 100000000LL +
+                        static_cast<std::int64_t>(day) * 1000000LL +
+                        static_cast<std::int64_t>(hour) * 10000LL +
+                        static_cast<std::int64_t>(minute) * 100LL + second;
+    }
+    return true;
+}
+
+inline std::string datetime_to_string(std::int64_t datetime_val) {
+    int second = static_cast<int>(datetime_val % 100);
+    datetime_val /= 100;
+    int minute = static_cast<int>(datetime_val % 100);
+    datetime_val /= 100;
+    int hour = static_cast<int>(datetime_val % 100);
+    datetime_val /= 100;
+    int day = static_cast<int>(datetime_val % 100);
+    datetime_val /= 100;
+    int month = static_cast<int>(datetime_val % 100);
+    datetime_val /= 100;
+    int year = static_cast<int>(datetime_val);
+
+    char buf[20];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+                  year, month, day, hour, minute, second);
+    return std::string(buf);
+}
+
 struct Value {
     ColType type;  // type of value
     union {
         int int_val;      // int value
+        std::int64_t bigint_val;  // bigint value
+        std::int64_t datetime_val;  // datetime value
         float float_val;  // float value
     };
     std::string str_val;  // string value
@@ -50,6 +129,18 @@ struct Value {
         float_val = float_val_;
     }
 
+    void set_bigint(std::int64_t bigint_val_) {
+        raw.reset();
+        type = TYPE_BIGINT;
+        bigint_val = bigint_val_;
+    }
+
+    void set_datetime(std::int64_t datetime_val_) {
+        raw.reset();
+        type = TYPE_DATETIME;
+        datetime_val = datetime_val_;
+    }
+
     void set_str(std::string str_val_) {
         raw.reset();
         type = TYPE_STRING;
@@ -62,6 +153,12 @@ struct Value {
         if (type == TYPE_INT) {
             assert(len == sizeof(int));
             *(int *)(raw->data) = int_val;
+        } else if (type == TYPE_BIGINT) {
+            assert(len == sizeof(std::int64_t));
+            *(std::int64_t *)(raw->data) = bigint_val;
+        } else if (type == TYPE_DATETIME) {
+            assert(len == sizeof(std::int64_t));
+            *(std::int64_t *)(raw->data) = datetime_val;
         } else if (type == TYPE_FLOAT) {
             assert(len == sizeof(float));
             *(float *)(raw->data) = float_val;
@@ -79,8 +176,32 @@ inline bool coerce_value_to_col_type(Value &val, ColType target_type) {
     if (val.type == target_type) {
         return true;
     }
+    if (target_type == TYPE_BIGINT && val.type == TYPE_INT) {
+        val.set_bigint(val.int_val);
+        return true;
+    }
+    if (target_type == TYPE_INT && val.type == TYPE_BIGINT) {
+        if (val.bigint_val < std::numeric_limits<int>::min() ||
+            val.bigint_val > std::numeric_limits<int>::max()) {
+            return false;
+        }
+        val.set_int(static_cast<int>(val.bigint_val));
+        return true;
+    }
     if (target_type == TYPE_FLOAT && val.type == TYPE_INT) {
         val.set_float(static_cast<float>(val.int_val));
+        return true;
+    }
+    if (target_type == TYPE_FLOAT && val.type == TYPE_BIGINT) {
+        val.set_float(static_cast<float>(val.bigint_val));
+        return true;
+    }
+    if (target_type == TYPE_DATETIME && val.type == TYPE_STRING) {
+        std::int64_t datetime_val;
+        if (!parse_datetime_literal(val.str_val, &datetime_val)) {
+            return false;
+        }
+        val.set_datetime(datetime_val);
         return true;
     }
     return false;

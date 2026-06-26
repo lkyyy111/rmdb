@@ -186,7 +186,7 @@ type:
     }
     |   CHAR '(' VALUE_INT ')'
     {
-        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, $3);
+        $$ = std::make_shared<TypeLen>(SV_TYPE_STRING, static_cast<int>($3));
     }
     |   FLOAT
     {

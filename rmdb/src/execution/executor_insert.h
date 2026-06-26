@@ -51,22 +51,20 @@ class InsertExecutor : public AbstractExecutor {
             }
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
-        std::vector<std::pair<IxIndexHandle *, std::string>> index_keys;
-        for (auto &index : tab_.indexes) {
-            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
-            std::string key = make_index_key_from_record(index.cols, rec.data);
-            std::vector<Rid> exists;
-            if (ih->get_value(key.data(), &exists, context_->txn_)) {
-                throw InternalError("Duplicate index key");
-            }
-            index_keys.push_back({ih, key});
-        }
         // Insert into record file
         rid_ = fh_->insert_record(rec.data, context_);
         
         // Insert into index
-        for (auto &entry : index_keys) {
-            entry.first->insert_entry(entry.second.data(), rid_, context_->txn_);
+        for(size_t i = 0; i < tab_.indexes.size(); ++i) {
+            auto& index = tab_.indexes[i];
+            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            char* key = new char[index.col_tot_len];
+            int offset = 0;
+            for(size_t i = 0; i < index.col_num; ++i) {
+                memcpy(key + offset, rec.data + index.cols[i].offset, index.cols[i].len);
+                offset += index.cols[i].len;
+            }
+            ih->insert_entry(key, rid_, context_->txn_);
         }
         return nullptr;
     }

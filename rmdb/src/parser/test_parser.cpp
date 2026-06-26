@@ -17,6 +17,8 @@ int main() {
     std::vector<std::string> sqls = {
         "show tables;",
         "desc tb;",
+        "create table tb_bigint (a bigint, b int);",
+        "create table tb_datetime (id int, time datetime);",
         "create table tb (a int, b float, c char(4));",
         "drop table tb;",
         "create index tb(a);",
@@ -24,6 +26,8 @@ int main() {
         "drop index tb(a, b, c);",
         "drop index tb(b);",
         "insert into tb values (1, 3.14, 'pi');",
+        "insert into tb_bigint values (372036854775807, 1);",
+        "insert into tb_datetime values (1, '2023-05-18 09:12:19');",
         "delete from tb where a = 1;",
         "update tb set a = 1, b = 2.2, c = 'xyz' where x = 2 and y < 1.1 and z > 'abc';",
         "select * from tb;",

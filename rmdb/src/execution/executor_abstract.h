@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 
 #include "execution_defs.h"
@@ -23,6 +24,16 @@ inline int compare_raw_value(const char *lhs, const char *rhs, ColType type, int
         case TYPE_INT: {
             int lhs_val = *reinterpret_cast<const int *>(lhs);
             int rhs_val = *reinterpret_cast<const int *>(rhs);
+            return (lhs_val > rhs_val) - (lhs_val < rhs_val);
+        }
+        case TYPE_BIGINT: {
+            std::int64_t lhs_val = *reinterpret_cast<const std::int64_t *>(lhs);
+            std::int64_t rhs_val = *reinterpret_cast<const std::int64_t *>(rhs);
+            return (lhs_val > rhs_val) - (lhs_val < rhs_val);
+        }
+        case TYPE_DATETIME: {
+            std::int64_t lhs_val = *reinterpret_cast<const std::int64_t *>(lhs);
+            std::int64_t rhs_val = *reinterpret_cast<const std::int64_t *>(rhs);
             return (lhs_val > rhs_val) - (lhs_val < rhs_val);
         }
         case TYPE_FLOAT: {
@@ -100,20 +111,6 @@ inline bool eval_conditions(const std::vector<ColMeta> &cols, const RmRecord &re
         }
     }
     return true;
-}
-
-inline std::string make_index_key_from_record(const std::vector<ColMeta> &cols, const char *record_data) {
-    int total_len = 0;
-    for (auto &col : cols) {
-        total_len += col.len;
-    }
-    std::string key(total_len, '\0');
-    int offset = 0;
-    for (auto &col : cols) {
-        memcpy(&key[offset], record_data + col.offset, col.len);
-        offset += col.len;
-    }
-    return key;
 }
 
 class AbstractExecutor {
