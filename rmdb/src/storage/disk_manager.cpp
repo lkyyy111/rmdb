@@ -27,6 +27,15 @@ DiskManager::DiskManager() {
     }
 }
 
+DiskManager::~DiskManager() {
+    for (auto &entry : path2fd_) {
+        close(entry.second);
+    }
+    for (auto &entry : closed_path2fd_) {
+        close(entry.second);
+    }
+}
+
 /**
  * @description: 将数据写入文件的指定磁盘页面中
  * @param {int} fd 磁盘文件的文件句柄
@@ -147,6 +156,16 @@ void DiskManager::destroy_file(const std::string &path) {
     if (path2fd_.count(path)) {
         throw FileNotClosedError(path);
     }
+    auto closed = closed_path2fd_.find(path);
+    if (closed != closed_path2fd_.end()) {
+        int fd = closed->second;
+        close(fd);
+        closed_path2fd_.erase(closed);
+        fd2pageno_[fd].store(0);
+        if (log_fd_ == fd) {
+            log_fd_ = -1;
+        }
+    }
     if (unlink(path.c_str()) == -1) {
         throw UnixError();
     }
@@ -164,6 +183,15 @@ int DiskManager::open_file(const std::string &path) {
     }
     if (path2fd_.count(path)) {
         throw FileNotClosedError(path);
+    }
+
+    auto closed = closed_path2fd_.find(path);
+    if (closed != closed_path2fd_.end()) {
+        int fd = closed->second;
+        path2fd_[path] = fd;
+        fd2path_[fd] = path;
+        closed_path2fd_.erase(closed);
+        return fd;
     }
 
     int fd = open(path.c_str(), O_RDWR | O_BINARY);
@@ -186,11 +214,9 @@ void DiskManager::close_file(int fd) {
     }
 
     std::string path = fd2path_[fd];
-    if (close(fd) == -1) {
-        throw UnixError();
-    }
     fd2path_.erase(fd);
     path2fd_.erase(path);
+    closed_path2fd_[path] = fd;
 }
 
 
@@ -212,6 +238,11 @@ int DiskManager::get_file_size(const std::string &file_name) {
  */
 std::string DiskManager::get_file_name(int fd) {
     if (!fd2path_.count(fd)) {
+        for (auto &entry : closed_path2fd_) {
+            if (entry.second == fd) {
+                return entry.first;
+            }
+        }
         throw FileNotOpenError(fd);
     }
     return fd2path_[fd];

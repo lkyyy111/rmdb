@@ -224,6 +224,8 @@ class IxIndexHandle {
                     const char *upper_key, bool has_upper, bool upper_inclusive,
                     std::vector<Rid> *result) const;
 
+    void clear_entries() { mem_entries_.clear(); }
+
    private:
     // 辅助函数
     void update_root_page_no(page_id_t root) { file_hdr_->root_page_ = root; }

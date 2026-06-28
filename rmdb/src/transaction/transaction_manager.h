@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <unordered_map>
 
 #include "transaction.h"
@@ -53,13 +54,11 @@ public:
         if(txn_id == INVALID_TXN_ID) return nullptr;
         
         std::unique_lock<std::mutex> lock(latch_);
-        assert(TransactionManager::txn_map.find(txn_id) != TransactionManager::txn_map.end());
-        auto *res = TransactionManager::txn_map[txn_id];
-        lock.unlock();
-        assert(res != nullptr);
-        assert(res->get_thread_id() == std::this_thread::get_id());
-
-        return res;
+        auto it = TransactionManager::txn_map.find(txn_id);
+        if (it == TransactionManager::txn_map.end()) {
+            return nullptr;
+        }
+        return it->second;
     }
 
     static std::unordered_map<txn_id_t, Transaction *> txn_map;     // 全局事务表，存放事务ID与事务对象的映射关系

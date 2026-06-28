@@ -99,6 +99,9 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
     if (txn == nullptr) {
         return;
     }
+    if (txn->get_state() == TransactionState::ABORTED || txn->get_state() == TransactionState::COMMITTED) {
+        return;
+    }
 
     CommitLogRecord log_record(txn->get_transaction_id());
     append_log(txn, log_manager, &log_record);
@@ -122,6 +125,9 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
 
 void TransactionManager::abort(Transaction *txn, LogManager *log_manager) {
     if (txn == nullptr) {
+        return;
+    }
+    if (txn->get_state() == TransactionState::ABORTED) {
         return;
     }
 

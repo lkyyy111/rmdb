@@ -1173,7 +1173,7 @@ YY_RULE_SETUP
     char *end = nullptr;
     long long val = strtoll(yytext, &end, 10);
     if (errno == ERANGE || end == yytext || *end != '\0') {
-        return YYUNDEF;
+        return T_EOF;
     }
     yylval->sv_int = val;
     return VALUE_INT;

@@ -17,7 +17,10 @@ See the Mulan PSL v2 for more details. */
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <exception>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -50,7 +53,7 @@ auto optimizer = std::make_unique<Optimizer>(sm_manager.get(), planner.get());
 auto portal = std::make_unique<Portal>(sm_manager.get());
 auto analyze = std::make_unique<Analyze>(sm_manager.get());
 pthread_mutex_t *buffer_mutex;
-pthread_mutex_t *sockfd_mutex;
+static std::mutex request_mutex;
 
 static jmp_buf jmpbuf;
 void sigint_handler(int signo) {
@@ -102,6 +105,37 @@ static bool try_handle_show_index(const char *sql, Context *context) {
     return true;
 }
 
+static void safe_auto_commit(Context *context) {
+    if (context == nullptr || context->txn_ == nullptr) {
+        return;
+    }
+    if (context->txn_->get_txn_mode() ||
+        context->txn_->get_state() == TransactionState::ABORTED ||
+        context->txn_->get_state() == TransactionState::COMMITTED) {
+        return;
+    }
+    try {
+        txn_manager->commit(context->txn_, context->log_mgr_);
+    } catch (TransactionAbortException &) {
+        try {
+            txn_manager->abort(context->txn_, context->log_mgr_);
+        } catch (...) {
+        }
+    } catch (std::exception &e) {
+        std::cerr << e.what() << std::endl;
+        try {
+            txn_manager->abort(context->txn_, context->log_mgr_);
+        } catch (...) {
+        }
+    } catch (...) {
+        std::cerr << "auto commit failed" << std::endl;
+        try {
+            txn_manager->abort(context->txn_, context->log_mgr_);
+        } catch (...) {
+        }
+    }
+}
+
 void SetTransaction(txn_id_t *txn_id, Context *context) {
     context->txn_ = txn_manager->get_transaction(*txn_id);
     if(context->txn_ == nullptr || context->txn_->get_state() == TransactionState::COMMITTED ||
@@ -113,14 +147,15 @@ void SetTransaction(txn_id_t *txn_id, Context *context) {
 }
 
 void *client_handler(void *sock_fd) {
-    int fd = *((int *)sock_fd);
-    pthread_mutex_unlock(sockfd_mutex);
+    std::unique_ptr<int> fd_guard(static_cast<int *>(sock_fd));
+    int fd = *fd_guard;
 
     int i_recvBytes;
     // 接收客户端发送的请求
     char data_recv[BUFFER_LENGTH];
     // 需要返回给客户端的结果
-    char *data_send = new char[BUFFER_LENGTH];
+    auto data_send_guard = std::make_unique<char[]>(BUFFER_LENGTH);
+    char *data_send = data_send_guard.get();
     // 需要返回给客户端的结果的长度
     int offset = 0;
     // 记录客户端当前正在执行的事务ID
@@ -157,12 +192,35 @@ void *client_handler(void *sock_fd) {
 
         std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
 
+        std::lock_guard<std::mutex> request_guard(request_mutex);
         memset(data_send, '\0', BUFFER_LENGTH);
         offset = 0;
 
         // 开启事务，初始化系统所需的上下文信息（包括事务对象指针、锁管理器指针、日志管理器指针、存放结果的buffer、记录结果长度的变量）
-        Context *context = new Context(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
-        SetTransaction(&txn_id, context);
+        auto context_guard = std::make_unique<Context>(lock_manager.get(), log_manager.get(), nullptr, data_send, &offset);
+        Context *context = context_guard.get();
+        try {
+            SetTransaction(&txn_id, context);
+        } catch (std::exception &e) {
+            std::cerr << e.what() << std::endl;
+            std::string str = "failure\n";
+            memcpy(data_send, str.c_str(), str.length());
+            data_send[str.length()] = '\0';
+            offset = str.length();
+            if (write(fd, data_send, offset + 1) == -1) {
+                break;
+            }
+            continue;
+        } catch (...) {
+            std::string str = "failure\n";
+            memcpy(data_send, str.c_str(), str.length());
+            data_send[str.length()] = '\0';
+            offset = str.length();
+            if (write(fd, data_send, offset + 1) == -1) {
+                break;
+            }
+            continue;
+        }
 
         bool handled_directly = false;
         try {
@@ -179,14 +237,35 @@ void *client_handler(void *sock_fd) {
             outfile << "failure\n";
             outfile.close();
             handled_directly = true;
+        } catch (std::exception &e) {
+            std::cerr << e.what() << std::endl;
+            std::string str = "failure\n";
+            memcpy(data_send, str.c_str(), str.length());
+            data_send[str.length()] = '\0';
+            offset = str.length();
+
+            std::fstream outfile;
+            outfile.open("output.txt", std::ios::out | std::ios::app);
+            outfile << str;
+            outfile.close();
+            handled_directly = true;
+        } catch (...) {
+            std::string str = "failure\n";
+            memcpy(data_send, str.c_str(), str.length());
+            data_send[str.length()] = '\0';
+            offset = str.length();
+
+            std::fstream outfile;
+            outfile.open("output.txt", std::ios::out | std::ios::app);
+            outfile << str;
+            outfile.close();
+            handled_directly = true;
         }
         if (handled_directly) {
             if (write(fd, data_send, offset + 1) == -1) {
                 break;
             }
-            if (context->txn_->get_txn_mode() == false) {
-                txn_manager->commit(context->txn_, context->log_mgr_);
-            }
+            safe_auto_commit(context);
             continue;
         }
 
@@ -217,7 +296,13 @@ void *client_handler(void *sock_fd) {
                     offset = str.length();
 
                     // 回滚事务
-                    txn_manager->abort(context->txn_, log_manager.get());
+                    try {
+                        txn_manager->abort(context->txn_, log_manager.get());
+                    } catch (std::exception &abort_err) {
+                        std::cerr << abort_err.what() << std::endl;
+                    } catch (...) {
+                        std::cerr << "abort failed" << std::endl;
+                    }
                     std::cout << e.GetInfo() << std::endl;
 
                     std::fstream outfile;
@@ -237,6 +322,27 @@ void *client_handler(void *sock_fd) {
                     std::fstream outfile;
                     outfile.open("output.txt",std::ios::out | std::ios::app);
                     outfile << "failure\n";
+                    outfile.close();
+                } catch (std::exception &e) {
+                    std::cerr << e.what() << std::endl;
+                    std::string str = "failure\n";
+                    memcpy(data_send, str.c_str(), str.length());
+                    data_send[str.length()] = '\0';
+                    offset = str.length();
+
+                    std::fstream outfile;
+                    outfile.open("output.txt", std::ios::out | std::ios::app);
+                    outfile << str;
+                    outfile.close();
+                } catch (...) {
+                    std::string str = "failure\n";
+                    memcpy(data_send, str.c_str(), str.length());
+                    data_send[str.length()] = '\0';
+                    offset = str.length();
+
+                    std::fstream outfile;
+                    outfile.open("output.txt", std::ios::out | std::ios::app);
+                    outfile << str;
                     outfile.close();
                 }
             }
@@ -261,9 +367,22 @@ void *client_handler(void *sock_fd) {
             break;
         }
         // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
-        if(context->txn_->get_txn_mode() == false)
-        {
-            txn_manager->commit(context->txn_, context->log_mgr_);
+        safe_auto_commit(context);
+    }
+
+    {
+        std::lock_guard<std::mutex> request_guard(request_mutex);
+        Transaction *active_txn = txn_manager->get_transaction(txn_id);
+        if (active_txn != nullptr &&
+            active_txn->get_state() != TransactionState::COMMITTED &&
+            active_txn->get_state() != TransactionState::ABORTED) {
+            try {
+                txn_manager->abort(active_txn, log_manager.get());
+            } catch (std::exception &e) {
+                std::cerr << e.what() << std::endl;
+            } catch (...) {
+                std::cerr << "abort failed" << std::endl;
+            }
         }
     }
 
@@ -276,9 +395,7 @@ void *client_handler(void *sock_fd) {
 void start_server() {
     // init mutex
     buffer_mutex = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
-    sockfd_mutex = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
     pthread_mutex_init(buffer_mutex, nullptr);
-    pthread_mutex_init(sockfd_mutex, nullptr);
 
     int sockfd_server;
     int fd_temp;
@@ -319,7 +436,6 @@ void start_server() {
         }
 
         // Block here. Until server accepts a new connection.
-        pthread_mutex_lock(sockfd_mutex);
         int sockfd = accept(sockfd_server, (struct sockaddr *)(&s_addr_client), (socklen_t *)(&client_length));
         if (sockfd == -1) {
             std::cout << "Accept error!" << std::endl;
@@ -327,10 +443,14 @@ void start_server() {
         }
         
         // 和客户端建立连接，并开启一个线程负责处理客户端请求
-        if (pthread_create(&thread_id, nullptr, &client_handler, (void *)(&sockfd)) != 0) {
+        auto *client_fd = new int(sockfd);
+        if (pthread_create(&thread_id, nullptr, &client_handler, client_fd) != 0) {
+            delete client_fd;
+            close(sockfd);
             std::cout << "Create thread fail!" << std::endl;
-            break;  // break while loop
+            continue;
         }
+        pthread_detach(thread_id);
 
     }
 
@@ -352,6 +472,7 @@ int main(int argc, char **argv) {
     }
 
     signal(SIGINT, sigint_handler);
+    signal(SIGPIPE, SIG_IGN);
     try {
         std::cout << "\n"
                      "  _____  __  __ _____  ____  \n"

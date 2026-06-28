@@ -14,6 +14,7 @@
 #include "ast.h"
 #include "yacc.tab.h"
 #include <cerrno>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 
@@ -105,7 +106,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
     char *end = nullptr;
     long long val = std::strtoll(yytext, &end, 10);
     if (errno == ERANGE || end == yytext || *end != '\0') {
-        return YYUNDEF;
+        return T_EOF;
     }
     yylval->sv_int = val;
     return VALUE_INT;

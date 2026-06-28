@@ -8,6 +8,7 @@ RMDB is licensed under Mulan PSL v2. */
 #include <unistd.h>
 
 #include "errors.h"
+#include "record/rm_scan.h"
 
 namespace {
 
@@ -113,11 +114,37 @@ void flush_all_table_files(SmManager* sm_manager, BufferPoolManager* bpm) {
     }
 }
 
+void rebuild_all_indexes(SmManager* sm_manager) {
+    for (auto& fh_entry : sm_manager->fhs_) {
+        const std::string& tab_name = fh_entry.first;
+        TabMeta& tab = sm_manager->db_.get_table(tab_name);
+        if (tab.indexes.empty()) {
+            continue;
+        }
+        RmFileHandle* fh = fh_entry.second.get();
+
+        for (auto& index : tab.indexes) {
+            std::string ix_name = sm_manager->get_ix_manager()->get_index_name(tab_name, index.cols);
+            sm_manager->ihs_.at(ix_name)->clear_entries();
+        }
+
+        for (RmScan scan(fh); !scan.is_end(); scan.next()) {
+            auto record = fh->get_record(scan.rid(), nullptr);
+            for (auto& index : tab.indexes) {
+                std::string ix_name = sm_manager->get_ix_manager()->get_index_name(tab_name, index.cols);
+                std::string key = make_index_key_for_recovery(index.cols, record->data);
+                sm_manager->ihs_.at(ix_name)->insert_entry(key.data(), scan.rid(), nullptr);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void RecoveryManager::analyze() {
     logs_.clear();
     committed_txns_.clear();
+    finished_txns_.clear();
 
     int file_size = disk_manager_->get_file_size(LOG_FILE_NAME);
     if (file_size <= 0) {
@@ -145,6 +172,9 @@ void RecoveryManager::analyze() {
         log_record->deserialize(data.data() + offset);
         if (log_record->log_type_ == LogType::commit) {
             committed_txns_.insert(log_record->log_tid_);
+            finished_txns_.insert(log_record->log_tid_);
+        } else if (log_record->log_type_ == LogType::ABORT) {
+            finished_txns_.insert(log_record->log_tid_);
         }
         logs_.push_back(log_record);
         offset += static_cast<int>(total_len);
@@ -172,7 +202,7 @@ void RecoveryManager::redo() {
 void RecoveryManager::undo() {
     for (auto it = logs_.rbegin(); it != logs_.rend(); ++it) {
         auto& log_record = *it;
-        if (committed_txns_.find(log_record->log_tid_) != committed_txns_.end()) {
+        if (finished_txns_.find(log_record->log_tid_) != finished_txns_.end()) {
             continue;
         }
         if (log_record->log_type_ == LogType::INSERT) {
@@ -188,6 +218,7 @@ void RecoveryManager::undo() {
     }
 
     flush_all_table_files(sm_manager_, buffer_pool_manager_);
+    rebuild_all_indexes(sm_manager_);
     int log_fd = disk_manager_->GetLogFd();
     if (log_fd != -1) {
         ftruncate(log_fd, 0);

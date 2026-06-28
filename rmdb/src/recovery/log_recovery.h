@@ -33,6 +33,7 @@ class RecoveryManager {
    private:
     std::vector<std::shared_ptr<LogRecord>> logs_;
     std::unordered_set<txn_id_t> committed_txns_;
+    std::unordered_set<txn_id_t> finished_txns_;
     LogBuffer buffer_;
     DiskManager* disk_manager_;
     BufferPoolManager* buffer_pool_manager_;
