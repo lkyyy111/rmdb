@@ -40,6 +40,8 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
+
         struct UpdateItem {
             Rid rid;
             std::unique_ptr<RmRecord> old_record;
@@ -90,6 +92,11 @@ class UpdateExecutor : public AbstractExecutor {
         }
 
         for (auto &item : items) {
+            UpdateLogRecord log_record(context_->txn_->get_transaction_id(), *item.old_record, *item.new_record,
+                                       item.rid, tab_name_);
+            append_txn_log(context_, &log_record);
+            context_->txn_->append_write_record(
+                new WriteRecord(WType::UPDATE_TUPLE, tab_name_, item.rid, *item.old_record));
             for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                 std::string old_key = make_index_key_from_record(index.cols, item.old_record->data);

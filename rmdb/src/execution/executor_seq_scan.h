@@ -60,6 +60,7 @@ class SeqScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         scan_ = std::make_unique<RmScan>(fh_);
         advance_to_valid_record();
     }

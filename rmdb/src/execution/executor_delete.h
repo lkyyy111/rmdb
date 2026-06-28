@@ -37,8 +37,13 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
+
         for (auto &rid : rids_) {
             auto record = fh_->get_record(rid, context_);
+            DeleteLogRecord log_record(context_->txn_->get_transaction_id(), *record, rid, tab_name_);
+            append_txn_log(context_, &log_record);
+            context_->txn_->append_write_record(new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *record));
             for (auto &index : tab_.indexes) {
                 auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
                 std::string key = make_index_key_from_record(index.cols, record->data);

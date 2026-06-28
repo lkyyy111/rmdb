@@ -127,6 +127,16 @@ inline std::string make_index_key_from_record(const std::vector<ColMeta> &cols, 
     return key;
 }
 
+inline void append_txn_log(Context *context, LogRecord *log_record) {
+    if (context == nullptr || context->txn_ == nullptr || context->log_mgr_ == nullptr || log_record == nullptr) {
+        return;
+    }
+    log_record->prev_lsn_ = context->txn_->get_prev_lsn();
+    lsn_t lsn = context->log_mgr_->add_log_to_buffer(log_record);
+    context->txn_->set_prev_lsn(lsn);
+    context->log_mgr_->flush_log_to_disk();
+}
+
 class AbstractExecutor {
    public:
     Rid _abstract_rid;

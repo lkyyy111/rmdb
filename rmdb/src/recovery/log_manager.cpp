@@ -23,7 +23,12 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
 
     std::lock_guard<std::mutex> lock(latch_);
     if (log_buffer_.is_full(log_record->log_tot_len_)) {
-        flush_log_to_disk();
+        if (log_buffer_.offset_ != 0) {
+            disk_manager_->write_log(log_buffer_.buffer_, log_buffer_.offset_);
+            persist_lsn_ = global_lsn_.load() - 1;
+            memset(log_buffer_.buffer_, 0, sizeof(log_buffer_.buffer_));
+            log_buffer_.offset_ = 0;
+        }
     }
 
     log_record->lsn_ = global_lsn_++;
@@ -36,6 +41,7 @@ lsn_t LogManager::add_log_to_buffer(LogRecord* log_record) {
  * @description: 把日志缓冲区的内容刷到磁盘中，由于目前只设置了一个缓冲区，因此需要阻塞其他日志操作
  */
 void LogManager::flush_log_to_disk() {
+    std::lock_guard<std::mutex> lock(latch_);
     if (log_buffer_.offset_ == 0) {
         return;
     }

@@ -170,6 +170,7 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         std::vector<char> lower_key;
         std::vector<char> upper_key;
         bool has_lower = false;
