@@ -22,6 +22,8 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_update.h"
 #include "execution/executor_insert.h"
 #include "execution/executor_delete.h"
+#include "execution/executor_limit.h"
+#include "execution/executor_aggregate.h"
 #include "execution/execution_sort.h"
 #include "common/common.h"
 
@@ -67,9 +69,16 @@ class Portal
             switch(x->tag) {
                 case T_select:
                 {
-                    std::shared_ptr<ProjectionPlan> p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_);
-                    std::unique_ptr<AbstractExecutor> root= convert_plan_executor(p, context);
-                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(p->sel_cols_), std::move(root), plan);
+                    std::vector<TabCol> sel_cols;
+                    if (auto p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_)) {
+                        sel_cols = p->sel_cols_;
+                    } else if (auto p = std::dynamic_pointer_cast<AggregatePlan>(x->subplan_)) {
+                        sel_cols = p->sel_cols_;
+                    } else {
+                        throw InternalError("Unexpected select plan");
+                    }
+                    std::unique_ptr<AbstractExecutor> root = convert_plan_executor(x->subplan_, context);
+                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(sel_cols), std::move(root), plan);
                 }
                     
                 case T_Update:
@@ -172,7 +181,11 @@ class Portal
             return join;
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
             return std::make_unique<SortExecutor>(convert_plan_executor(x->subplan_, context), 
-                                            x->sel_col_, x->is_desc_);
+                                            x->sel_cols_, x->is_descs_);
+        } else if(auto x = std::dynamic_pointer_cast<LimitPlan>(plan)) {
+            return std::make_unique<LimitExecutor>(convert_plan_executor(x->subplan_, context), x->limit_);
+        } else if(auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)) {
+            return std::make_unique<AggregateExecutor>(convert_plan_executor(x->subplan_, context), x->aggs_);
         }
         return nullptr;
     }

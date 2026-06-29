@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -17,52 +18,103 @@ See the Mulan PSL v2 for more details. */
 
 class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
-    std::unique_ptr<AbstractExecutor> left_;    // 左儿子节点（需要join的表）
-    std::unique_ptr<AbstractExecutor> right_;   // 右儿子节点（需要join的表）
-    size_t len_;                                // join后获得的每条记录的长度
-    std::vector<ColMeta> cols_;                 // join后获得的记录的字段
+    static constexpr size_t JOIN_BUFFER_BYTES = 64 * 1024 * 1024;
 
-    std::vector<Condition> fed_conds_;          // join条件
+    std::unique_ptr<AbstractExecutor> left_;
+    std::unique_ptr<AbstractExecutor> right_;
+    size_t len_;
+    std::vector<ColMeta> cols_;
+
+    std::vector<Condition> fed_conds_;
     bool isend;
     std::unique_ptr<RmRecord> current_tuple_;
-    std::vector<std::unique_ptr<RmRecord>> right_records_;
-    int right_idx_ = -1;
+    std::vector<std::unique_ptr<RmRecord>> left_block_;
+    size_t left_block_idx_ = 0;
+    size_t left_block_bytes_ = 0;
+    std::unique_ptr<RmRecord> right_tuple_;
 
-    std::unique_ptr<RmRecord> make_join_record(const RmRecord &right_record) {
-        auto left_record = left_->Next();
-        if (left_record == nullptr) {
-            return nullptr;
-        }
-
+    std::unique_ptr<RmRecord> make_join_record(const RmRecord &left_record, const RmRecord &right_record) {
         auto record = std::make_unique<RmRecord>(len_);
-        memcpy(record->data, left_record->data, left_->tupleLen());
+        memcpy(record->data, left_record.data, left_->tupleLen());
         memcpy(record->data + left_->tupleLen(), right_record.data, right_->tupleLen());
         return record;
     }
 
+    size_t buffered_record_bytes(const RmRecord &record) const {
+        return static_cast<size_t>(record.size) + sizeof(RmRecord) + sizeof(std::unique_ptr<RmRecord>);
+    }
+
+    bool load_left_block() {
+        left_block_.clear();
+        left_block_idx_ = 0;
+        left_block_bytes_ = 0;
+
+        while (!left_->is_end()) {
+            auto record = left_->Next();
+            left_->nextTuple();
+            if (record == nullptr) {
+                continue;
+            }
+
+            size_t record_bytes = buffered_record_bytes(*record);
+            if (!left_block_.empty() && left_block_bytes_ + record_bytes > JOIN_BUFFER_BYTES) {
+                break;
+            }
+            left_block_bytes_ += record_bytes;
+            left_block_.push_back(std::move(record));
+            if (left_block_bytes_ >= JOIN_BUFFER_BYTES) {
+                break;
+            }
+        }
+
+        return !left_block_.empty();
+    }
+
+    void reset_right_scan() {
+        right_->beginTuple();
+        right_tuple_.reset();
+        left_block_idx_ = 0;
+    }
+
     void advance_to_valid_record() {
         current_tuple_ = nullptr;
-        while (!left_->is_end() && !right_records_.empty()) {
-            while (right_idx_ >= 0) {
-                auto record = make_join_record(*right_records_[right_idx_]);
-                if (record != nullptr && eval_conditions(cols_, *record, fed_conds_)) {
-                    current_tuple_ = std::move(record);
-                    isend = false;
-                    return;
+        while (!left_block_.empty()) {
+            while (!right_->is_end()) {
+                if (right_tuple_ == nullptr) {
+                    right_tuple_ = right_->Next();
+                    left_block_idx_ = 0;
                 }
-                --right_idx_;
+                if (right_tuple_ == nullptr) {
+                    right_->nextTuple();
+                    continue;
+                }
+
+                while (left_block_idx_ < left_block_.size()) {
+                    auto record = make_join_record(*left_block_[left_block_idx_], *right_tuple_);
+                    ++left_block_idx_;
+                    if (eval_conditions(cols_, *record, fed_conds_)) {
+                        current_tuple_ = std::move(record);
+                        isend = false;
+                        return;
+                    }
+                }
+
+                right_tuple_.reset();
+                right_->nextTuple();
             }
-            left_->nextTuple();
-            if (!left_->is_end()) {
-                right_idx_ = static_cast<int>(right_records_.size()) - 1;
+
+            if (!load_left_block()) {
+                isend = true;
+                return;
             }
+            reset_right_scan();
         }
         isend = true;
     }
 
    public:
-    NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right, 
-                            std::vector<Condition> conds) {
+    NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right,
+                           std::vector<Condition> conds) {
         left_ = std::move(left);
         right_ = std::move(right);
         len_ = left_->tupleLen() + right_->tupleLen();
@@ -75,20 +127,17 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         cols_.insert(cols_.end(), right_cols.begin(), right_cols.end());
         isend = false;
         fed_conds_ = std::move(conds);
-
     }
 
     void beginTuple() override {
         left_->beginTuple();
-        right_->beginTuple();
-        right_records_.clear();
-        for (; !right_->is_end(); right_->nextTuple()) {
-            auto record = right_->Next();
-            if (record != nullptr) {
-                right_records_.push_back(std::move(record));
-            }
+        right_tuple_.reset();
+        current_tuple_ = nullptr;
+        if (!load_left_block()) {
+            isend = true;
+            return;
         }
-        right_idx_ = static_cast<int>(right_records_.size()) - 1;
+        reset_right_scan();
         advance_to_valid_record();
     }
 
@@ -96,7 +145,6 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         if (isend) {
             return;
         }
-        --right_idx_;
         advance_to_valid_record();
     }
 

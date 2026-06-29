@@ -15,9 +15,11 @@ See the Mulan PSL v2 for more details. */
 #include <memory>
 #include <string>
 #include <vector>
+#include "common/common.h"
 #include "parser/ast.h"
 
 #include "parser/parser.h"
+#include "system/sm.h"
 
 typedef enum PlanTag{
     T_Invalid = 1,
@@ -40,6 +42,8 @@ typedef enum PlanTag{
     T_IndexScan,
     T_NestLoop,
     T_Sort,
+    T_Limit,
+    T_Aggregate,
     T_Projection
 } PlanTag;
 
@@ -118,18 +122,50 @@ class ProjectionPlan : public Plan
 class SortPlan : public Plan
 {
     public:
-        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, TabCol sel_col, bool is_desc)
+        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols, std::vector<bool> is_descs)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
-            sel_col_ = sel_col;
-            is_desc_ = is_desc;
+            sel_cols_ = std::move(sel_cols);
+            is_descs_ = std::move(is_descs);
         }
         ~SortPlan(){}
         std::shared_ptr<Plan> subplan_;
-        TabCol sel_col_;
-        bool is_desc_;
+        std::vector<TabCol> sel_cols_;
+        std::vector<bool> is_descs_;
         
+};
+
+class LimitPlan : public Plan
+{
+    public:
+        LimitPlan(PlanTag tag, std::shared_ptr<Plan> subplan, size_t limit)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            limit_ = limit;
+        }
+        ~LimitPlan(){}
+        std::shared_ptr<Plan> subplan_;
+        size_t limit_;
+};
+
+class AggregatePlan : public Plan
+{
+    public:
+        AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan,
+                      std::vector<std::shared_ptr<ast::AggExpr>> aggs,
+                      std::vector<TabCol> sel_cols)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            aggs_ = std::move(aggs);
+            sel_cols_ = std::move(sel_cols);
+        }
+        ~AggregatePlan(){}
+        std::shared_ptr<Plan> subplan_;
+        std::vector<std::shared_ptr<ast::AggExpr>> aggs_;
+        std::vector<TabCol> sel_cols_;
 };
 
 // dml语句，包括insert; delete; update; select语句　

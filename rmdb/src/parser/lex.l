@@ -90,6 +90,8 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "ORDER" { return ORDER; }
 "BY" {  return BY;  }
 "ASC" { return ASC; }
+"AS" { return AS; }
+"LIMIT" { return LIMIT; }
     /* operators */
 ">=" { return GEQ; }
 "<=" { return LEQ; }

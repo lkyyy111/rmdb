@@ -158,6 +158,7 @@ std::shared_ptr<Plan> Planner::physical_optimization(std::shared_ptr<Query> quer
 
     // 处理orderby
     plan = generate_sort_plan(query, std::move(plan)); 
+    plan = generate_limit_plan(query, std::move(plan));
 
     return plan;
 }
@@ -287,13 +288,46 @@ std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, 
         const auto &sel_tab_cols = sm_manager_->db_.get_table(sel_tab_name).cols;
         all_cols.insert(all_cols.end(), sel_tab_cols.begin(), sel_tab_cols.end());
     }
-    TabCol sel_col;
-    for (auto &col : all_cols) {
-        if(col.name.compare(x->order->cols->col_name) == 0 )
-        sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+    std::vector<TabCol> sel_cols;
+    std::vector<bool> is_descs;
+    for (auto &order_item : x->order->items) {
+        TabCol target = {
+            .tab_name = order_item.col->tab_name,
+            .col_name = order_item.col->col_name,
+        };
+        if (target.tab_name.empty()) {
+            for (auto &col : all_cols) {
+                if (col.name == target.col_name) {
+                    if (!target.tab_name.empty()) {
+                        throw AmbiguousColumnError(target.col_name);
+                    }
+                    target.tab_name = col.tab_name;
+                }
+            }
+        }
+        bool found = false;
+        for (auto &col : all_cols) {
+            if (col.tab_name == target.tab_name && col.name == target.col_name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw ColumnNotFoundError(target.tab_name.empty() ? target.col_name : target.tab_name + "." + target.col_name);
+        }
+        sel_cols.push_back(target);
+        is_descs.push_back(order_item.orderby_dir == ast::OrderBy_DESC);
     }
-    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sel_col, 
-                                    x->order->orderby_dir == ast::OrderBy_DESC);
+    return std::make_shared<SortPlan>(T_Sort, std::move(plan), std::move(sel_cols), std::move(is_descs));
+}
+
+std::shared_ptr<Plan> Planner::generate_limit_plan(std::shared_ptr<Query> query, std::shared_ptr<Plan> plan)
+{
+    auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse);
+    if (!x->has_limit) {
+        return plan;
+    }
+    return std::make_shared<LimitPlan>(T_Limit, std::move(plan), static_cast<size_t>(x->limit));
 }
 
 
@@ -310,6 +344,12 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
 
     //物理优化
     auto sel_cols = query->cols;
+    if (!query->aggs.empty()) {
+        std::shared_ptr<Plan> plannerRoot = make_one_rel(query);
+        return std::make_shared<AggregatePlan>(T_Aggregate, std::move(plannerRoot),
+                                               std::move(query->aggs), std::move(sel_cols));
+    }
+
     std::shared_ptr<Plan> plannerRoot = physical_optimization(query, context);
     plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), 
                                                         std::move(sel_cols));

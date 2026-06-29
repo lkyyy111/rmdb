@@ -1,6 +1,25 @@
 find_package(BISON REQUIRED)
 find_package(FLEX REQUIRED)
 
+execute_process(
+        COMMAND ${BISON_EXECUTABLE}
+                --defines=${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.h
+                -o ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/yacc.y
+        RESULT_VARIABLE BISON_GENERATE_RESULT)
+if (NOT BISON_GENERATE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to generate parser with bison")
+endif ()
+
+execute_process(
+        COMMAND ${FLEX_EXECUTABLE}
+                --outfile=${CMAKE_CURRENT_SOURCE_DIR}/lex.yy.cpp
+                ${CMAKE_CURRENT_SOURCE_DIR}/lex.l
+        RESULT_VARIABLE FLEX_GENERATE_RESULT)
+if (NOT FLEX_GENERATE_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to generate lexer with flex")
+endif ()
+
 bison_target(yacc yacc.y ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.cpp
         DEFINES_FILE ${CMAKE_CURRENT_SOURCE_DIR}/yacc.tab.h)
 flex_target(lex lex.l ${CMAKE_CURRENT_SOURCE_DIR}/lex.yy.cpp)

@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "analyze.h"
 
+#include <algorithm>
 #include <limits>
 
 /**
@@ -29,26 +30,65 @@ std::shared_ptr<Query> Analyze::do_analyze(std::shared_ptr<ast::TreeNode> parse)
         }
 
         // 处理target list，再target list中添加上表名，例如 a.id
-        for (auto &sv_sel_col : x->cols) {
-            TabCol sel_col = {.tab_name = sv_sel_col->tab_name, .col_name = sv_sel_col->col_name};
-            query->cols.push_back(sel_col);
-        }
-        
         std::vector<ColMeta> all_cols;
         get_all_cols(query->tables, all_cols);
-        if (query->cols.empty()) {
+        if (x->has_agg) {
+            query->aggs = x->aggs;
+            for (auto &agg : query->aggs) {
+                query->cols.push_back(TabCol{.tab_name = "", .col_name = agg->alias});
+                if (agg->is_star) {
+                    continue;
+                }
+                if (agg->col == nullptr) {
+                    throw InternalError("Unexpected aggregate argument");
+                }
+
+                TabCol agg_col = {.tab_name = agg->col->tab_name, .col_name = agg->col->col_name};
+                agg_col = check_column(all_cols, agg_col);
+                agg->col->tab_name = agg_col.tab_name;
+                agg->col->col_name = agg_col.col_name;
+
+                auto col_meta = std::find_if(all_cols.begin(), all_cols.end(), [&](const ColMeta &col) {
+                    return col.tab_name == agg_col.tab_name && col.name == agg_col.col_name;
+                });
+                if (col_meta == all_cols.end()) {
+                    throw ColumnNotFoundError(agg_col.tab_name + "." + agg_col.col_name);
+                }
+                if (agg->type == ast::AGG_SUM && col_meta->type != TYPE_INT &&
+                    col_meta->type != TYPE_FLOAT && col_meta->type != TYPE_BIGINT) {
+                    throw IncompatibleTypeError("INT/FLOAT", coltype2str(col_meta->type));
+                }
+            }
+        } else {
+            for (auto &sv_sel_col : x->cols) {
+                TabCol sel_col = {.tab_name = sv_sel_col->tab_name, .col_name = sv_sel_col->col_name};
+                query->cols.push_back(sel_col);
+            }
+            if (query->cols.empty()) {
             // select all columns
             for (auto &col : all_cols) {
                 TabCol sel_col = {.tab_name = col.tab_name, .col_name = col.name};
                 query->cols.push_back(sel_col);
             }
-        } else {
+            } else {
             // infer table name from column name
             for (auto &sel_col : query->cols) {
                 sel_col = check_column(all_cols, sel_col);  // 列元数据校验
             }
         }
         //处理where条件
+        }
+        if (x->has_sort) {
+            for (auto &order_item : x->order->items) {
+                TabCol order_col = {
+                    .tab_name = order_item.col->tab_name,
+                    .col_name = order_item.col->col_name,
+                };
+                order_col = check_column(all_cols, order_col);
+                order_item.col->tab_name = order_col.tab_name;
+                order_item.col->col_name = order_col.col_name;
+            }
+        }
         get_clause(x->conds, query->conds);
         check_clause(query->tables, query->conds);
     } else if (auto x = std::dynamic_pointer_cast<ast::UpdateStmt>(parse)) {

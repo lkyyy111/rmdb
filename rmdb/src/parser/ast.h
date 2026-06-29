@@ -63,6 +63,13 @@ enum OrderByDir {
     OrderBy_DESC
 };
 
+enum AggType {
+    AGG_COUNT,
+    AGG_MAX,
+    AGG_MIN,
+    AGG_SUM
+};
+
 // Base class for tree nodes
 struct TreeNode {
     virtual ~TreeNode() = default;  // enable polymorphism
@@ -197,12 +204,66 @@ struct BinaryExpr : public TreeNode {
             lhs(std::move(lhs_)), op(op_), rhs(std::move(rhs_)) {}
 };
 
+struct OrderByItem {
+    std::shared_ptr<Col> col;
+    OrderByDir orderby_dir = OrderBy_DEFAULT;
+
+    OrderByItem() = default;
+    OrderByItem(std::shared_ptr<Col> col_, OrderByDir orderby_dir_) :
+        col(std::move(col_)), orderby_dir(orderby_dir_) {}
+};
+
 struct OrderBy : public TreeNode
 {
     std::shared_ptr<Col> cols;
-    OrderByDir orderby_dir;
-    OrderBy( std::shared_ptr<Col> cols_, OrderByDir orderby_dir_) :
-       cols(std::move(cols_)), orderby_dir(std::move(orderby_dir_)) {}
+    OrderByDir orderby_dir = OrderBy_DEFAULT;
+    std::vector<OrderByItem> items;
+
+    OrderBy() = default;
+    OrderBy(std::vector<OrderByItem> items_) : items(std::move(items_)) {
+        if (!items.empty()) {
+            cols = items.front().col;
+            orderby_dir = items.front().orderby_dir;
+        }
+    }
+    OrderBy(std::shared_ptr<Col> cols_, OrderByDir orderby_dir_) :
+        cols(cols_), orderby_dir(orderby_dir_) {
+        items.emplace_back(std::move(cols_), orderby_dir_);
+    }
+};
+
+inline std::string agg_type_to_string(AggType type) {
+    switch (type) {
+        case AGG_COUNT:
+            return "COUNT";
+        case AGG_MAX:
+            return "MAX";
+        case AGG_MIN:
+            return "MIN";
+        case AGG_SUM:
+            return "SUM";
+    }
+    return "";
+}
+
+struct AggExpr : public TreeNode {
+    AggType type;
+    std::shared_ptr<Col> col;
+    bool is_star;
+    std::string alias;
+
+    AggExpr(AggType type_, std::shared_ptr<Col> col_, bool is_star_, std::string alias_) :
+            type(type_), col(std::move(col_)), is_star(is_star_), alias(std::move(alias_)) {
+        if (alias.empty()) {
+            if (is_star) {
+                alias = agg_type_to_string(type) + "(*)";
+            } else if (col != nullptr) {
+                alias = agg_type_to_string(type) + "(" + col->col_name + ")";
+            } else {
+                alias = agg_type_to_string(type) + "()";
+            }
+        }
+    }
 };
 
 struct InsertStmt : public TreeNode {
@@ -248,19 +309,44 @@ struct SelectStmt : public TreeNode {
     std::vector<std::string> tabs;
     std::vector<std::shared_ptr<BinaryExpr>> conds;
     std::vector<std::shared_ptr<JoinExpr>> jointree;
+    std::vector<std::shared_ptr<AggExpr>> aggs;
 
     
     bool has_sort;
     std::shared_ptr<OrderBy> order;
+    bool has_limit;
+    std::int64_t limit;
+    bool has_agg = false;
 
 
     SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
                std::vector<std::string> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
                std::shared_ptr<OrderBy> order_) :
+            SelectStmt(std::move(cols_), std::move(tabs_), std::move(conds_), std::move(order_), -1) {}
+
+    SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
+               std::vector<std::string> tabs_,
+               std::vector<std::shared_ptr<BinaryExpr>> conds_,
+               std::shared_ptr<OrderBy> order_,
+               std::int64_t limit_) :
             cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
-            order(std::move(order_)) {
-                has_sort = (bool)order;
+            order(std::move(order_)), limit(limit_) {
+                has_sort = order && !order->items.empty();
+                has_limit = limit >= 0;
+                has_agg = false;
+            }
+
+    SelectStmt(std::vector<std::shared_ptr<AggExpr>> aggs_,
+               std::vector<std::string> tabs_,
+               std::vector<std::shared_ptr<BinaryExpr>> conds_,
+               std::shared_ptr<OrderBy> order_,
+               std::int64_t limit_) :
+            cols(), tabs(std::move(tabs_)), conds(std::move(conds_)), aggs(std::move(aggs_)),
+            order(std::move(order_)), limit(limit_) {
+                has_sort = order && !order->items.empty();
+                has_limit = limit >= 0;
+                has_agg = !aggs.empty();
             }
 };
 
@@ -289,12 +375,18 @@ struct SemValue {
     std::shared_ptr<Col> sv_col;
     std::vector<std::shared_ptr<Col>> sv_cols;
 
+    AggType sv_agg_type;
+    std::shared_ptr<AggExpr> sv_agg;
+    std::vector<std::shared_ptr<AggExpr>> sv_aggs;
+
     std::shared_ptr<SetClause> sv_set_clause;
     std::vector<std::shared_ptr<SetClause>> sv_set_clauses;
 
     std::shared_ptr<BinaryExpr> sv_cond;
     std::vector<std::shared_ptr<BinaryExpr>> sv_conds;
 
+    OrderByItem sv_orderby_item;
+    std::vector<OrderByItem> sv_orderby_items;
     std::shared_ptr<OrderBy> sv_orderby;
 };
 

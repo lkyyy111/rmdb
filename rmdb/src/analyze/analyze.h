@@ -28,6 +28,7 @@ class Query{
     std::vector<Condition> conds;
     // 投影列
     std::vector<TabCol> cols;
+    std::vector<std::shared_ptr<ast::AggExpr>> aggs;
     // 表名
     std::vector<std::string> tables;
     // update 的set 值

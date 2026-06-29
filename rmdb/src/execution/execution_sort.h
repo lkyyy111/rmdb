@@ -19,23 +19,26 @@ See the Mulan PSL v2 for more details. */
 #include "system/sm.h"
 
 class SortExecutor : public AbstractExecutor {
-   private:
+    private:
     std::unique_ptr<AbstractExecutor> prev_;
-    ColMeta sort_col_;
+    std::vector<ColMeta> sort_cols_;
     std::vector<ColMeta> cols_;
     size_t len_;
-    bool is_desc_;
+    std::vector<bool> is_descs_;
     std::vector<std::unique_ptr<RmRecord>> tuples_;
     size_t pos_ = 0;
     bool is_end_ = true;
 
    public:
-    SortExecutor(std::unique_ptr<AbstractExecutor> prev, TabCol sel_cols, bool is_desc) {
+    SortExecutor(std::unique_ptr<AbstractExecutor> prev, const std::vector<TabCol> &sel_cols,
+                 std::vector<bool> is_descs) {
         prev_ = std::move(prev);
-        sort_col_ = prev_->get_col_offset(sel_cols);
+        for (auto &sel_col : sel_cols) {
+            sort_cols_.push_back(prev_->get_col_offset(sel_col));
+        }
         cols_ = prev_->cols();
         len_ = prev_->tupleLen();
-        is_desc_ = is_desc;
+        is_descs_ = std::move(is_descs);
     }
 
     void beginTuple() override {
@@ -49,9 +52,15 @@ class SortExecutor : public AbstractExecutor {
         }
 
         std::stable_sort(tuples_.begin(), tuples_.end(), [&](const auto &lhs, const auto &rhs) {
-            int cmp = compare_raw_value(lhs->data + sort_col_.offset, rhs->data + sort_col_.offset,
-                                        sort_col_.type, sort_col_.len);
-            return is_desc_ ? cmp > 0 : cmp < 0;
+            for (size_t i = 0; i < sort_cols_.size(); ++i) {
+                auto &sort_col = sort_cols_[i];
+                int cmp = compare_raw_value(lhs->data + sort_col.offset, rhs->data + sort_col.offset,
+                                            sort_col.type, sort_col.len);
+                if (cmp != 0) {
+                    return is_descs_[i] ? cmp > 0 : cmp < 0;
+                }
+            }
+            return false;
         });
         pos_ = 0;
         is_end_ = tuples_.empty();

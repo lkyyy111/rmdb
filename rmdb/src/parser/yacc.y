@@ -1,6 +1,8 @@
 %{
 #include "ast.h"
 #include "yacc.tab.h"
+#include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <memory>
 
@@ -21,7 +23,7 @@ using namespace ast;
 %define parse.error verbose
 
 // keywords
-%token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
+%token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY LIMIT AS
 WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
@@ -44,12 +46,19 @@ WHERE UPDATE SET SELECT INT CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_CO
 %type <sv_strs> tableList colNameList
 %type <sv_col> col
 %type <sv_cols> colList selector
+%type <sv_agg_type> aggFunc
+%type <sv_agg> aggregateExpr
+%type <sv_aggs> aggregateSelector
+%type <sv_str> opt_aggregate_alias
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
 %type <sv_conds> whereClause optWhereClause
-%type <sv_orderby>  order_clause opt_order_clause
+%type <sv_orderby> opt_order_clause
+%type <sv_orderby_items> order_clause
+%type <sv_orderby_item> order_item
 %type <sv_orderby_dir> opt_asc_desc
+%type <sv_int> opt_limit_clause
 
 %%
 start:
@@ -144,9 +153,13 @@ dml:
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
-    |   SELECT selector FROM tableList optWhereClause opt_order_clause
+    |   SELECT selector FROM tableList optWhereClause opt_order_clause opt_limit_clause
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
+    }
+    |   SELECT aggregateSelector FROM tableList optWhereClause opt_order_clause opt_limit_clause
+    {
+        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6, $7);
     }
     ;
 
@@ -332,6 +345,73 @@ selector:
     |   colList
     ;
 
+aggregateSelector:
+        aggregateExpr
+    {
+        $$ = std::vector<std::shared_ptr<AggExpr>>{$1};
+    }
+    |   aggregateSelector ',' aggregateExpr
+    {
+        $$.push_back($3);
+    }
+    ;
+
+aggregateExpr:
+        aggFunc '(' col ')' opt_aggregate_alias
+    {
+        $$ = std::make_shared<AggExpr>($1, $3, false, $5);
+    }
+    |   aggFunc '(' '*' ')' opt_aggregate_alias
+    {
+        if ($1 != AGG_COUNT) {
+            yyerror(&@1, "Only COUNT supports * argument");
+            YYERROR;
+        }
+        $$ = std::make_shared<AggExpr>($1, nullptr, true, $5);
+    }
+    |   aggFunc '(' ')' opt_aggregate_alias
+    {
+        if ($1 != AGG_COUNT) {
+            yyerror(&@1, "Only COUNT supports empty argument");
+            YYERROR;
+        }
+        $$ = std::make_shared<AggExpr>($1, nullptr, true, $4);
+    }
+    ;
+
+aggFunc:
+        colName
+    {
+        std::string name = $1;
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::toupper(ch));
+        });
+        if (name == "COUNT") {
+            $$ = AGG_COUNT;
+        } else if (name == "MAX") {
+            $$ = AGG_MAX;
+        } else if (name == "MIN") {
+            $$ = AGG_MIN;
+        } else if (name == "SUM") {
+            $$ = AGG_SUM;
+        } else {
+            yyerror(&@1, "Unsupported aggregate function");
+            YYERROR;
+        }
+    }
+    ;
+
+opt_aggregate_alias:
+        AS colName
+    {
+        $$ = $2;
+    }
+    |   /* epsilon */
+    {
+        $$ = "";
+    }
+    ;
+
 tableList:
         tbName
     {
@@ -350,23 +430,47 @@ tableList:
 opt_order_clause:
     ORDER BY order_clause      
     { 
-        $$ = $3; 
+        $$ = std::make_shared<OrderBy>($3);
     }
-    |   /* epsilon */ { /* ignore*/ }
+    |   /* epsilon */ { $$ = nullptr; }
     ;
 
 order_clause:
-      col  opt_asc_desc 
-    { 
-        $$ = std::make_shared<OrderBy>($1, $2);
+      order_item
+    {
+        $$ = std::vector<OrderByItem>{$1};
     }
-    ;   
+    | order_clause ',' order_item
+    {
+        $$ = $1;
+        $$.push_back($3);
+    }
+    ;
+
+order_item:
+      col opt_asc_desc
+    { 
+        $$ = OrderByItem($1, $2);
+    }
+    ;
 
 opt_asc_desc:
     ASC          { $$ = OrderBy_ASC;     }
     |  DESC      { $$ = OrderBy_DESC;    }
     |       { $$ = OrderBy_DEFAULT; }
     ;    
+
+opt_limit_clause:
+    LIMIT VALUE_INT
+    {
+        if ($2 < 0) {
+            yyerror(&@2, "LIMIT must be non-negative");
+            YYERROR;
+        }
+        $$ = $2;
+    }
+    |       { $$ = -1; }
+    ;
 
 tbName: IDENTIFIER;
 

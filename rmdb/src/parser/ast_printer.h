@@ -111,6 +111,11 @@ private:
             std::cout << "COL\n";
             print_val(x->tab_name, offset);
             print_val(x->col_name, offset);
+        } else if (auto x = std::dynamic_pointer_cast<AggExpr>(node)) {
+            std::cout << "AGG_EXPR\n";
+            print_val(agg_type_to_string(x->type), offset);
+            print_val(x->is_star ? "*" : x->col->col_name, offset);
+            print_val(x->alias, offset);
         } else if (auto x = std::dynamic_pointer_cast<TypeLen>(node)) {
             std::cout << "TYPE_LEN\n";
             print_val(type2str(x->type), offset);
@@ -148,7 +153,11 @@ private:
             print_node_list(x->conds, offset);
         } else if (auto x = std::dynamic_pointer_cast<SelectStmt>(node)) {
             std::cout << "SELECT\n";
-            print_node_list(x->cols, offset);
+            if (x->has_agg) {
+                print_node_list(x->aggs, offset);
+            } else {
+                print_node_list(x->cols, offset);
+            }
             print_val_list(x->tabs, offset);
             print_node_list(x->conds, offset);
         } else if (auto x = std::dynamic_pointer_cast<TxnBegin>(node)) {
